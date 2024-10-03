@@ -1,0 +1,63 @@
+{
+    "name": "vscode-playground-builder",
+    "displayName": "vscode-playground-builder",
+    "description": "",
+    "version": "0.0.1",
+    "engines": {
+        "vscode": "^1.93.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onWebviewPanel:playgroundBuilder"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "playgroundBuilder",
+                    "title": "Unimicro playground",
+                    "icon": "media/icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "playgroundBuilder": [
+                {
+                    "type": "webview",
+                    "id": "playgroundBuilder.panel",
+                    "name": "Build"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "vscode-playground-builder.helloWorld",
+                "title": "Hello World",
+                "category": "Unimicro playground"
+            }
+        ]
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "tsc -p ./ && cd webview && npm run build",
+        "watch": "tsc -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src",
+        "start:webview": "cd webview && npm run dev",
+        "build:webview": "cd webview && npm run build"
+    },
+    "devDependencies": {
+        "@types/mocha": "^10.0.8",
+        "@types/node": "20.x",
+        "@types/vscode": "^1.93.0",
+        "@typescript-eslint/eslint-plugin": "^8.7.0",
+        "@typescript-eslint/parser": "^8.7.0",
+        "dotenv": "^16.4.5",
+        "eslint": "^9.11.1",
+        "prettier": "^3.1.1",
+        "typescript": "^5.6.2"
+    }
+}
