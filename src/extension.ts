@@ -80,38 +80,39 @@ class ViewProvider implements vscode.WebviewViewProvider {
 
         const params = new URLSearchParams(state.properties);
         const url = `${process.env.JENKINS_URL}/job/CompletePlayground/buildWithParameters?${params.toString()}`;
-
-        console.log(url);
-
         const authHeader = 'Basic ' + btoa(`${state.auth.username}:${state.auth.token}`);
-        this.trackBuildProgress(123, authHeader);
 
-        // const res = await fetch(url, {
-        //     method: 'POST',
-        //     headers: { Authorization: authHeader }
-        // });
-        //
-        // if (res.ok) {
-        //     const body = await res.text();
-        //     const buildNumber = res.headers.get('location');
-        //     vscode.window.showInformationMessage('Success: ' + buildNumber);
-        // } else {
-        //     const err = await res.text();
-        //     vscode.window.showErrorMessage(`Error starting build: Status ${res.status} - ${err}`);
-        // }
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { Authorization: authHeader }
+        });
+
+        if (res.ok) {
+            const queueUrl = res.headers.get('Location') || '';
+            const queueId = Number(
+                queueUrl
+                    .split('/')
+                    .filter((part) => part.length > 0)
+                    .at(-1)
+            );
+            this.trackBuildProgress(queueId, authHeader);
+        } else {
+            const err = await res.text();
+            vscode.window.showErrorMessage(`Error starting build: Status ${res.status} - ${err}`);
+        }
     }
 
-    private trackBuildProgress(queueNumber: number | string, authHeader: string) {
+    private async trackBuildProgress(queueId: number, authHeader: string) {
         vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
-                title: 'Playground build progress',
+                title: 'Build progress (press cancel to stop tracking)',
                 cancellable: true
             },
             (progress, cancellationToken) => {
                 let intervalId: NodeJS.Timeout;
 
-                progress.report({ message: 'Build queued' });
+                progress.report({ message: 'Queued' });
 
                 cancellationToken.onCancellationRequested(() => {
                     console.log('USER CANCELLED PROGRESS TRACKER');
@@ -119,23 +120,103 @@ class ViewProvider implements vscode.WebviewViewProvider {
                 });
 
                 return new Promise<void>((resolve) => {
-                    let i = 0;
-                    intervalId = setInterval(() => {
-                        console.log('TODO: check progress');
-                        i++;
-                        if (i === 5) {
+                    let buildId: number;
+                    let fuckupMitigator = 0;
+
+                    intervalId = setInterval(async () => {
+                        fuckupMitigator++;
+                        if (fuckupMitigator >= 300) {
+                            vscode.window.showWarningMessage('Build progress indicator timed out');
                             clearInterval(intervalId);
                             resolve();
-                            // Show success message?
                         }
 
-                        progress.report({ message: 'Building ' + i });
+                        const stop = () => {
+                            clearInterval(intervalId);
+                            resolve();
+                        };
+
+                        // TODO: do better..
+                        if (buildId) {
+                            const status = await this.getBuildStatus(buildId, authHeader);
+
+                            if (status.state === 'ERROR') {
+                                vscode.window.showErrorMessage('Failed to get build progress');
+                                stop();
+                            } else if (status.state === 'ABORTED') {
+                                vscode.window.showErrorMessage('Job cancelled');
+                                stop();
+                            } else {
+                                progress.report({ message: `${status.state} - ${status.stage}` });
+                            }
+                        } else {
+                            const status = await this.getQueueStatus(queueId, authHeader);
+                            if (status.state === 'ERROR') {
+                                vscode.window.showErrorMessage('Failed to get build progress');
+                                stop();
+                            } else if (status.state === 'STARTED') {
+                                buildId = status.id!;
+                                progress.report({ message: 'Build started' });
+                            }
+                        }
                     }, 2000);
                 });
             }
         );
+    }
 
-        // /queue/item/121354/api/json
+    private async getQueueStatus(id: number, authHeader: string) {
+        const res = await fetch(`${process.env.JENKINS_URL}/queue/item/${id}/api/json`, {
+            method: 'GET',
+            headers: { Authorization: authHeader }
+        });
+
+        console.log(`${process.env.JENKINS_URL}/queue/item/${id}/api/json`);
+
+        if (res.ok) {
+            const body = (await res.json()) as any;
+            if (body.executable) {
+                return { state: 'STARTED', id: Number(body.executable.number) };
+            } else {
+                return { state: 'QUEUED' };
+            }
+        } else {
+            console.log(res.status);
+            return { state: 'ERROR' };
+        }
+    }
+
+    private async getBuildStatus(id: number, authHeader: string) {
+        const res = await fetch(
+            `${process.env.JENKINS_URL}/job/CompletePlayground/wfapi/runs?since=${id - 1}&fullStages=true`,
+            {
+                method: 'GET',
+                headers: { Authorization: authHeader }
+            }
+        );
+
+        if (res.ok) {
+            const runs = (await res.json()) as any;
+            const job = runs[0];
+            if (!job) {
+                return { state: 'ERROR' };
+            }
+
+            if (job.status === 'ABORTED') {
+                return { state: 'ABORTED' };
+            }
+
+            if (job.status === 'SUCCESS') {
+                return { state: 'SUCCESS' };
+            }
+
+            // Error state?
+
+            const stage = (job.stages as any[]).at(-1);
+            return { state: job.status, stage: stage.name };
+        } else {
+            return { state: 'ERROR' };
+        }
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
