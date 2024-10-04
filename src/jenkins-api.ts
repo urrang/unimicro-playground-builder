@@ -25,54 +25,25 @@ export async function startBuild(authHeader: string, properties: Record<string, 
     }
 }
 
-export async function getQueueStatus(authHeader: string, queueId: number) {
+export async function getBuildIdFromQueue(authHeader: string, queueId: number) {
     const res = await fetch(`${process.env.JENKINS_URL}/queue/item/${queueId}/api/json`, {
         method: 'GET',
         headers: { Authorization: authHeader }
     });
 
-    if (res.ok) {
-        const body = (await res.json()) as any;
-        if (body.executable) {
-            return { state: 'STARTED', id: Number(body.executable.number) };
-        } else {
-            return { state: 'QUEUED' };
-        }
-    } else {
-        console.log(res.status);
-        return { state: 'ERROR' };
-    }
+    const body = (await res.json()) as any;
+    return body.executable?.number;
 }
 
 export async function getBuildStatus(authHeader: string, id: number) {
     const res = await fetch(
-        `${process.env.JENKINS_URL}/job/CompletePlayground/wfapi/runs?since=${id - 1}&fullStages=true`,
+        `${process.env.JENKINS_URL}/job/CompletePlayground/wfapi/runs?since=${id - 1}&fullStages=false`,
         {
             method: 'GET',
             headers: { Authorization: authHeader }
         }
     );
 
-    if (res.ok) {
-        const runs = (await res.json()) as any;
-        const job = runs[0];
-        if (!job) {
-            return { state: 'ERROR' };
-        }
-
-        if (job.status === 'ABORTED') {
-            return { state: 'ABORTED' };
-        }
-
-        if (job.status === 'SUCCESS') {
-            return { state: 'SUCCESS' };
-        }
-
-        // TODO: Error state?
-
-        const stage = (job.stages as any[]).at(-1);
-        return { state: job.status, stage: stage.name };
-    } else {
-        return { state: 'ERROR' };
-    }
+    const body = (await res.json()) as any[];
+    return body[0].status as string;
 }

@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
-import { getBuildStatus, getQueueStatus, startBuild } from './jenkins-api';
-import { render } from '../webview/dist/index.js';
+import { startBuild, getBuildIdFromQueue, getBuildStatus } from './jenkins-api';
 
 export function activate(context: vscode.ExtensionContext) {
     dotenv.config({ path: path.join(__dirname, '..', '.env') });
@@ -81,73 +80,88 @@ class ViewProvider implements vscode.WebviewViewProvider {
         }
 
         const authHeader = 'Basic ' + btoa(`${state.auth.username}:${state.auth.token}`);
+
         const queueId = await startBuild(authHeader, state.properties);
         if (queueId) {
-            this.trackBuildProgress(queueId, authHeader);
+            this.trackProgress(queueId, authHeader);
         }
     }
 
-    private async trackBuildProgress(queueId: number, authHeader: string) {
-        vscode.window.withProgress(
-            {
-                location: vscode.ProgressLocation.Notification,
-                title: 'Build progress (press cancel to stop tracking)',
-                cancellable: true
-            },
-            (progress, cancellationToken) => {
-                let intervalId: NodeJS.Timeout;
+    private async trackProgress(queueId: number, authHeader: string) {
+        let buildId: number;
+        let timeoutId: NodeJS.Timeout;
+        let fuckupMitigator = 0;
+        let stop = false;
 
-                progress.report({ message: 'Queued' });
+        let previousState: string;
+        const reportProgress = async (state: string, isError = false) => {
+            if (state !== previousState) {
+                previousState = state;
 
-                cancellationToken.onCancellationRequested(() => {
-                    console.log('USER CANCELLED PROGRESS TRACKER');
-                    clearInterval(intervalId);
-                });
+                const show = isError ? vscode.window.showErrorMessage : vscode.window.showInformationMessage;
+                const message = (buildId ? `Build ${buildId}: ` : 'Build ') + state;
 
-                return new Promise<void>((resolve) => {
-                    let buildId: number;
-                    let fuckupMitigator = 0;
+                if (buildId) {
+                    // REVISIT: modal
+                    const res = await show(message, 'Show in browser');
 
-                    intervalId = setInterval(async () => {
-                        fuckupMitigator++;
-                        if (fuckupMitigator >= 300) {
-                            vscode.window.showWarningMessage('Build progress indicator timed out');
-                            clearInterval(intervalId);
-                            resolve();
-                        }
-
-                        const stop = () => {
-                            clearInterval(intervalId);
-                            resolve();
-                        };
-
-                        // TODO: do better..
-                        if (buildId) {
-                            const status = await getBuildStatus(authHeader, buildId);
-
-                            if (status.state === 'ERROR') {
-                                vscode.window.showErrorMessage('Failed to get build progress');
-                                stop();
-                            } else if (status.state === 'ABORTED') {
-                                vscode.window.showErrorMessage('Job cancelled');
-                                stop();
-                            } else {
-                                progress.report({ message: `${status.state} - ${status.stage}` });
-                            }
-                        } else {
-                            const status = await getQueueStatus(authHeader, queueId);
-                            if (status.state === 'ERROR') {
-                                vscode.window.showErrorMessage('Failed to get build progress');
-                                stop();
-                            } else if (status.state === 'STARTED') {
-                                buildId = status.id!;
-                                progress.report({ message: 'Build started' });
-                            }
-                        }
-                    }, 2000);
-                });
+                    if (res === 'Show in browser') {
+                        const url = `${process.env.JENKINS_URL}/view/Playgrounds/job/CompletePlayground/${buildId}`;
+                        vscode.env.openExternal(vscode.Uri.parse(url));
+                    }
+                } else {
+                    show(message);
+                }
             }
-        );
+        };
+
+        const check = async () => {
+            fuckupMitigator++;
+
+            if (fuckupMitigator >= 300) {
+                vscode.window.showWarningMessage('Build progress indicator timed out');
+                stop = true;
+                return;
+            }
+
+            if (buildId) {
+                try {
+                    const status = await getBuildStatus(authHeader, buildId);
+                    console.log('Build status: ', status);
+                    if (status === 'ABORTED' || status === 'NOT_EXECUTED') {
+                        reportProgress(status === 'ABORTED' ? 'cancelled' : 'failed', true);
+                        stop = true;
+                    } else if (status === 'SUCCESS') {
+                        reportProgress('completed');
+                        stop = true;
+                    } else {
+                        reportProgress('started');
+                    }
+                } catch (e) {
+                    vscode.window.showErrorMessage('Failed to get build progress');
+                    stop = true;
+                }
+            } else {
+                try {
+                    const id = await getBuildIdFromQueue(authHeader, queueId);
+                    if (id) {
+                        buildId = id;
+                        reportProgress('started');
+                    } else {
+                        reportProgress('queued');
+                    }
+                } catch (e) {
+                    vscode.window.showErrorMessage('Failed to get build progress');
+                    stop = true;
+                }
+            }
+
+            if (!stop) {
+                timeoutId = setTimeout(() => check(), 2000);
+            }
+        };
+
+        check();
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {

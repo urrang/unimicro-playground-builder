@@ -28,9 +28,9 @@
 
 <style>
 	footer {
-		position: sticky;
-		bottom: 1rem;
-		padding: 1rem 0;
+		/* position: sticky; */
+		/* bottom: 0; */
+		margin: 1rem 0;
 		background: var(--vscode-editor-background);
 	}
 
