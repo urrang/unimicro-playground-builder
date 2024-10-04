@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { getBuildStatus, getQueueStatus, startBuild } from './jenkins-api';
+import { render } from '../webview/dist/index.js';
 
 export function activate(context: vscode.ExtensionContext) {
     dotenv.config({ path: path.join(__dirname, '..', '.env') });
@@ -78,27 +80,10 @@ class ViewProvider implements vscode.WebviewViewProvider {
             vscode.window.showErrorMessage('Unable to start build, missing jenkins authentication details');
         }
 
-        const params = new URLSearchParams(state.properties);
-        const url = `${process.env.JENKINS_URL}/job/CompletePlayground/buildWithParameters?${params.toString()}`;
         const authHeader = 'Basic ' + btoa(`${state.auth.username}:${state.auth.token}`);
-
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { Authorization: authHeader }
-        });
-
-        if (res.ok) {
-            const queueUrl = res.headers.get('Location') || '';
-            const queueId = Number(
-                queueUrl
-                    .split('/')
-                    .filter((part) => part.length > 0)
-                    .at(-1)
-            );
+        const queueId = await startBuild(authHeader, state.properties);
+        if (queueId) {
             this.trackBuildProgress(queueId, authHeader);
-        } else {
-            const err = await res.text();
-            vscode.window.showErrorMessage(`Error starting build: Status ${res.status} - ${err}`);
         }
     }
 
@@ -138,7 +123,7 @@ class ViewProvider implements vscode.WebviewViewProvider {
 
                         // TODO: do better..
                         if (buildId) {
-                            const status = await this.getBuildStatus(buildId, authHeader);
+                            const status = await getBuildStatus(authHeader, buildId);
 
                             if (status.state === 'ERROR') {
                                 vscode.window.showErrorMessage('Failed to get build progress');
@@ -150,7 +135,7 @@ class ViewProvider implements vscode.WebviewViewProvider {
                                 progress.report({ message: `${status.state} - ${status.stage}` });
                             }
                         } else {
-                            const status = await this.getQueueStatus(queueId, authHeader);
+                            const status = await getQueueStatus(authHeader, queueId);
                             if (status.state === 'ERROR') {
                                 vscode.window.showErrorMessage('Failed to get build progress');
                                 stop();
@@ -163,60 +148,6 @@ class ViewProvider implements vscode.WebviewViewProvider {
                 });
             }
         );
-    }
-
-    private async getQueueStatus(id: number, authHeader: string) {
-        const res = await fetch(`${process.env.JENKINS_URL}/queue/item/${id}/api/json`, {
-            method: 'GET',
-            headers: { Authorization: authHeader }
-        });
-
-        console.log(`${process.env.JENKINS_URL}/queue/item/${id}/api/json`);
-
-        if (res.ok) {
-            const body = (await res.json()) as any;
-            if (body.executable) {
-                return { state: 'STARTED', id: Number(body.executable.number) };
-            } else {
-                return { state: 'QUEUED' };
-            }
-        } else {
-            console.log(res.status);
-            return { state: 'ERROR' };
-        }
-    }
-
-    private async getBuildStatus(id: number, authHeader: string) {
-        const res = await fetch(
-            `${process.env.JENKINS_URL}/job/CompletePlayground/wfapi/runs?since=${id - 1}&fullStages=true`,
-            {
-                method: 'GET',
-                headers: { Authorization: authHeader }
-            }
-        );
-
-        if (res.ok) {
-            const runs = (await res.json()) as any;
-            const job = runs[0];
-            if (!job) {
-                return { state: 'ERROR' };
-            }
-
-            if (job.status === 'ABORTED') {
-                return { state: 'ABORTED' };
-            }
-
-            if (job.status === 'SUCCESS') {
-                return { state: 'SUCCESS' };
-            }
-
-            // Error state?
-
-            const stage = (job.stages as any[]).at(-1);
-            return { state: job.status, stage: stage.name };
-        } else {
-            return { state: 'ERROR' };
-        }
     }
 
     private _getHtmlForWebview(webview: vscode.Webview) {
@@ -242,6 +173,11 @@ class ViewProvider implements vscode.WebviewViewProvider {
                 </head>
                 <body>
                     <div id="webview-container"></div>
+
+                    <script nonce="${nonce}">
+                        var extensionMode = 'build';
+                    </script>
+
                     <script nonce="${nonce}" src="${script}"></script>
                 </body>
 			</html>`;
