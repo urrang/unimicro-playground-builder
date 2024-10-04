@@ -91,27 +91,20 @@ class ViewProvider implements vscode.WebviewViewProvider {
         let buildId: number;
         let timeoutId: NodeJS.Timeout;
         let fuckupMitigator = 0;
-        let stop = false;
 
         let previousState: string;
-        const reportProgress = async (state: string, isError = false) => {
+        const reportBuildProgress = async (state: string, isError = false) => {
             if (state !== previousState) {
                 previousState = state;
 
                 const show = isError ? vscode.window.showErrorMessage : vscode.window.showInformationMessage;
-                const message = (buildId ? `Build ${buildId}: ` : 'Build ') + state;
 
-                if (buildId) {
-                    // REVISIT: modal
-                    const res = await show(message, 'Show in browser');
-
-                    if (res === 'Show in browser') {
+                show(`Build ${buildId} ${state}`, 'Show in browser').then((selectedAction) => {
+                    if (selectedAction === 'Show in browser') {
                         const url = `${process.env.JENKINS_URL}/view/Playgrounds/job/CompletePlayground/${buildId}`;
                         vscode.env.openExternal(vscode.Uri.parse(url));
                     }
-                } else {
-                    show(message);
-                }
+                });
             }
         };
 
@@ -120,47 +113,43 @@ class ViewProvider implements vscode.WebviewViewProvider {
 
             if (fuckupMitigator >= 300) {
                 vscode.window.showWarningMessage('Build progress indicator timed out');
-                stop = true;
                 return;
+            }
+
+            if (!buildId) {
+                try {
+                    const id = await getBuildIdFromQueue(authHeader, queueId);
+                    if (id) {
+                        buildId = id;
+                    }
+                } catch (e) {
+                    vscode.window.showErrorMessage('Failed to get build progress');
+                    return;
+                }
             }
 
             if (buildId) {
                 try {
                     const status = await getBuildStatus(authHeader, buildId);
-                    console.log('Build status: ', status);
-                    if (status === 'ABORTED' || status === 'NOT_EXECUTED') {
-                        reportProgress(status === 'ABORTED' ? 'cancelled' : 'failed', true);
-                        stop = true;
+                    if (status === 'ABORTED' || status === 'FAILED') {
+                        reportBuildProgress(status.toLowerCase(), true);
+                        return;
                     } else if (status === 'SUCCESS') {
-                        reportProgress('completed');
-                        stop = true;
+                        reportBuildProgress('completed');
+                        return;
                     } else {
-                        reportProgress('started');
+                        reportBuildProgress('started');
                     }
                 } catch (e) {
                     vscode.window.showErrorMessage('Failed to get build progress');
-                    stop = true;
-                }
-            } else {
-                try {
-                    const id = await getBuildIdFromQueue(authHeader, queueId);
-                    if (id) {
-                        buildId = id;
-                        reportProgress('started');
-                    } else {
-                        reportProgress('queued');
-                    }
-                } catch (e) {
-                    vscode.window.showErrorMessage('Failed to get build progress');
-                    stop = true;
+                    return;
                 }
             }
 
-            if (!stop) {
-                timeoutId = setTimeout(() => check(), 2000);
-            }
+            timeoutId = setTimeout(() => check(), 2000);
         };
 
+        vscode.window.showInformationMessage('Build queued');
         check();
     }
 
